@@ -1,13 +1,7 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.IO;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Threading.Tasks;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using static Program;
+using System.Collections.Concurrent;
+using System.Net;
 
 class Program
 {
@@ -21,6 +15,10 @@ class Program
     static string GuildExportFilePath = @"\\OPTSUKE01\steamcmd\steamapps\common\PalServer\Pal\Binaries\Win64\palguard\guildexport.json";
     static string PlayersApiUrl = "http://192.168.100.73:8212/v1/api/players";
     static string ApiAuthorizationHeader = "Basic YWRtaW46dW5yZWFs";
+
+    private static readonly TimeSpan CooldownPeriod = TimeSpan.FromMinutes(3); // Tempo para ignorar mensagens repetidas
+    private static Dictionary<string, DateTime> _recentLogs = new Dictionary<string, DateTime>();
+    private static readonly object Lock = new object();
 
     static async Task Main(string[] args)
     {
@@ -128,7 +126,7 @@ class Program
 
                 if (isFirstRead && lastLine != null)
                 {
-                    Console.WriteLine(lastLine);
+                    
                     ProcessLogLine(lastLine);
                     filePositions[filePath] = fs.Position;
                 }
@@ -137,7 +135,7 @@ class Program
                     fs.Seek(filePositions.GetOrAdd(filePath, 0), SeekOrigin.Begin);
                     while ((logLine = await reader.ReadLineAsync()) != null)
                     {
-                        Console.WriteLine(logLine);
+                        
                         ProcessLogLine(logLine);
                     }
                     filePositions[filePath] = fs.Position;
@@ -160,17 +158,17 @@ class Program
             formattedMessage = await FormatAttackMessage(logLine);
             if (formattedMessage != null)
             {
-                await SendDiscordNotification(formattedMessage, discordWebhookUrl_AtaquesGuild);
+                await ProcessLogMessage(formattedMessage, discordWebhookUrl_AtaquesGuild);
             }
         }
         else if (logLine.Contains("is a cheater"))
         {
             formattedMessage = logLine;
-            await SendDiscordNotification(formattedMessage, discordWebhookUrl_Cheater);
+            await ProcessLogMessage(formattedMessage, discordWebhookUrl_Cheater);
         }
 
         // Envia a mensagem original para o webhook de logs
-        await SendDiscordNotification(logLine, discordWebhookUrl_Logs);
+        await ProcessLogMessage(logLine, discordWebhookUrl_Logs);
     }
 
     // Formata a mensagem de ataque
@@ -292,7 +290,53 @@ class Program
             Console.WriteLine($"Erro ao enviar notificação para o Discord: {ex.Message}");
         }
     }
+    static async Task ProcessLogMessage(string message, string webhookUrl)
+    {
+        string[] parts = message.Split(new[] { ' ' }, 2, StringSplitOptions.RemoveEmptyEntries);
+
+        lock (Lock)
+        {
+            if (_recentLogs.TryGetValue(parts[1], out var lastTimestamp))
+            {
+                if (DateTime.Now - lastTimestamp < CooldownPeriod)
+                {
+                    // Mensagem repetida dentro do período de cooldown, ignorar
+                    Console.WriteLine($"Mensagem repetida, ignorando -- ({message})");
+                    return;
+                }
+            }
+
+            // Processar a mensagem (enviar para o Discord, etc.)
+            Console.WriteLine(message);
+            SendDiscordNotification(message, webhookUrl);
+
+            // Atualizar o timestamp da mensagem
+            _recentLogs[parts[1]] = DateTime.Now;
+
+            // Remover entradas antigas do cache
+            RemoveOldEntries();
+        }
+    }
+    private static void RemoveOldEntries()
+    {
+        var threshold = DateTime.Now - CooldownPeriod;
+        var keysToRemove = new List<string>();
+
+        foreach (var kvp in _recentLogs)
+        {
+            if (kvp.Value < threshold)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _recentLogs.Remove(key);
+        }
+    }
 }
+
 
 public class Guild
 {
