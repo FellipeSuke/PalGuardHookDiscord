@@ -2,6 +2,7 @@
 using Newtonsoft.Json.Linq;
 using System.Collections.Concurrent;
 using System.Net;
+using System.Text;
 
 class Program
 {
@@ -14,20 +15,30 @@ class Program
 
     static string GuildExportFilePath = @"\\OPTSUKE01\steamcmd\steamapps\common\PalServer\Pal\Binaries\Win64\palguard\guildexport.json";
     static string PlayersApiUrl = "http://192.168.100.73:8212/v1/api/players";
+    private static string KickApiUrl = "http://192.168.100.73:8212/v1/api/kick";
     static string ApiAuthorizationHeader = "Basic YWRtaW46dW5yZWFs";
-
-    private static readonly TimeSpan CooldownPeriod = TimeSpan.FromMinutes(3); // Tempo para ignorar mensagens repetidas
+    static string logDirectory;
+    static string dataDirectory;
+    private static int TempoEntreMsg;
+    private static readonly TimeSpan CooldownPeriod = TimeSpan.FromMinutes(TempoEntreMsg); // Tempo para ignorar mensagens repetidas
     private static Dictionary<string, DateTime> _recentLogs = new Dictionary<string, DateTime>();
     private static readonly object Lock = new object();
+    static int semLogsEnviados = 0;
+    public static KickPlayersManager kickPlayersManager = new KickPlayersManager();
+    private static Dictionary<string, DateTime> raidTimers = new Dictionary<string, DateTime>();
+    private static int raidDurationInHours;
+
 
     static async Task Main(string[] args)
     {
         // Obtém o diretório de logs a partir de variáveis de ambiente ou usa um caminho padrão
-        string logDirectory = Environment.GetEnvironmentVariable("LOG_DIRECTORY") ?? @"\\192.168.100.73\palguard\logs";
-        string dataDirectory = Environment.GetEnvironmentVariable("DATA_DIRECTORY") ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Dados");
+        logDirectory = Environment.GetEnvironmentVariable("LOG_DIRECTORY") ?? @"\\192.168.100.73\palguard\logs";
+        dataDirectory = Environment.GetEnvironmentVariable("DATA_DIRECTORY") ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Dados");
         discordWebhookUrl_Logs = Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL_Logs") ?? "https://discord.com/api/webhooks/1264730050935263273/dFORkiYBVRu0muxAp8V6Kvj9_nmTaCjn_I1SXH_FrXmhdm1ZiEKE1MMIL5Xd3DhiNOAe";
         discordWebhookUrl_Cheater = Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL_Cheater") ?? "https://discord.com/api/webhooks/1264728493967671446/Bp-gXNAH__HISjDMeSkYyIane-iQ38HE9QhIkXhPqq8DrTXErfGQThhA6YZoy3EZgu3a";
         discordWebhookUrl_AtaquesGuild = Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL_AtaquesGuild") ?? "https://discord.com/api/webhooks/1264728721835954196/ZZRHjttkYbN-WL1EkgWntgdZtLuuijeFFafSY0xXytbhukvgJpRmuGpz2qKPEY5QgmwS";
+        raidDurationInHours = int.Parse(Environment.GetEnvironmentVariable("RAID_DURATION") ?? "2");
+        TempoEntreMsg = int.Parse(Environment.GetEnvironmentVariable("COOLDOWN_MSG_API") ?? "2");
 
         // Cria o diretório de dados se ele não existir
         if (!Directory.Exists(dataDirectory))
@@ -35,7 +46,12 @@ class Program
             Directory.CreateDirectory(dataDirectory);
         }
 
+        //criando lista de kick
+
+
+
         Console.WriteLine("Monitorando o diretório: " + logDirectory);
+
 
         // Obtém o arquivo de log mais recente
         currentLogFile = GetLatestLogFile(logDirectory);
@@ -47,6 +63,8 @@ class Program
         else
         {
             Console.WriteLine("Nenhum arquivo de log encontrado no diretório.");
+            Thread.Sleep(120000);
+            MonitorLogFile(currentLogFile, false);
         }
 
         // Configura o FileSystemWatcher para monitorar mudanças no diretório de logs
@@ -76,6 +94,7 @@ class Program
         {
             currentLogFile = e.FullPath;
             _ = Task.Run(() => MonitorLogFile(e.FullPath, true));
+
         }
     }
 
@@ -92,59 +111,86 @@ class Program
     // Monitora o arquivo de log em busca de novas linhas
     private static async Task MonitorLogFile(string filePath, bool isFirstRead)
     {
-        try
+
+        while (true)
         {
-            while (true)
+            try
             {
                 await ReadLogFile(filePath, isFirstRead);
                 isFirstRead = false;
                 await Task.Delay(1000);
+                if (semLogsEnviados > 10)
+                {
+                    semLogsEnviados = 0;
+                    //Console.WriteLine("Procurando novo arquivo");
+
+                    FileSystemWatcher watcher = new FileSystemWatcher
+                    {
+                        Path = logDirectory,
+                        Filter = "*.txt",
+                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
+                    };
+
+                    watcher.Created += OnChanged;
+                    watcher.Changed += OnChanged;
+
+                    watcher.EnableRaisingEvents = true;
+                }
+                //Console.WriteLine(semLogsEnviados + " Segundos :DEBUG: Contando tempo sem log");
+                semLogsEnviados++;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao monitorar o arquivo: {ex.Message}");
+                Thread.Sleep( 120000 );
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Erro ao monitorar o arquivo: {ex.Message}");
-        }
+
     }
 
     // Lê o arquivo de log a partir da posição onde foi lido pela última vez
     private static async Task ReadLogFile(string filePath, bool isFirstRead)
     {
-        try
+        while (true)
         {
-            using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-            using (StreamReader reader = new StreamReader(fs))
+            try
             {
-                fs.Seek(filePositions.GetOrAdd(filePath, 0), SeekOrigin.Begin);
-
-                string logLine;
-                string lastLine = null;
-                while ((logLine = await reader.ReadLineAsync()) != null)
-                {
-                    lastLine = logLine;
-                }
-
-                if (isFirstRead && lastLine != null)
-                {
-                    
-                    ProcessLogLine(lastLine);
-                    filePositions[filePath] = fs.Position;
-                }
-                else
+                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (StreamReader reader = new StreamReader(fs))
                 {
                     fs.Seek(filePositions.GetOrAdd(filePath, 0), SeekOrigin.Begin);
+
+                    string logLine;
+                    string lastLine = null;
                     while ((logLine = await reader.ReadLineAsync()) != null)
                     {
-                        
-                        ProcessLogLine(logLine);
+                        lastLine = logLine;
                     }
-                    filePositions[filePath] = fs.Position;
+
+                    if (isFirstRead && lastLine != null)
+                    {
+
+                        ProcessLogLine(lastLine);
+                        filePositions[filePath] = fs.Position;
+                    }
+                    else
+                    {
+                        fs.Seek(filePositions.GetOrAdd(filePath, 0), SeekOrigin.Begin);
+                        while ((logLine = await reader.ReadLineAsync()) != null)
+                        {
+
+                            ProcessLogLine(logLine);
+                            semLogsEnviados = 0;
+                        }
+                        filePositions[filePath] = fs.Position;
+                    }
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Erro ao ler o arquivo: {ex.Message}");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao ler o arquivo: {ex.Message}");
+                Thread.Sleep(120000);
+            }
         }
     }
 
@@ -155,10 +201,34 @@ class Program
 
         if (logLine.Contains("have dealt"))
         {
-            formattedMessage = await FormatAttackMessage(logLine);
-            if (formattedMessage != null)
+            formattedMessageClass Mensagem = await FormatAttackMessage(logLine);
+            if (Mensagem != null)
             {
-                await ProcessLogMessage(formattedMessage, discordWebhookUrl_AtaquesGuild);
+                if (await ProcessLogMessage(Mensagem.message, discordWebhookUrl_AtaquesGuild))
+                {
+                    if (Mensagem.menbrosOnline != "Nenhum membro online")
+                    {
+                        // Inicia ou reseta o contador de 2h para Mensagem.guildaAtacada
+                        if (raidTimers.ContainsKey(Mensagem.guildaAtacadaId))
+                        {
+                            raidTimers[Mensagem.guildaAtacadaId] = DateTime.Now.AddHours(raidDurationInHours);
+                            raidTimers[Mensagem.guildaAtacanteId] = DateTime.Now.AddHours(raidDurationInHours);
+                        }
+                        else
+                        {
+                            raidTimers.Add(Mensagem.guildaAtacadaId, DateTime.Now.AddHours(raidDurationInHours));
+                            raidTimers.Add(Mensagem.guildaAtacanteId, DateTime.Now.AddHours(raidDurationInHours));
+                        }
+                    }
+                    else
+                    {
+                        if (!raidTimers.ContainsKey(Mensagem.guildaAtacanteId))
+                        {
+                            kickPlayersManager.AddKickedPlayer(Mensagem.attackerName, Mensagem.attackerId, "Kick por dano offline");
+                        }
+
+                    }
+                }
             }
         }
         else if (logLine.Contains("is a cheater"))
@@ -169,20 +239,48 @@ class Program
 
         // Envia a mensagem original para o webhook de logs
         await ProcessLogMessage(logLine, discordWebhookUrl_Logs);
+        KickPlayersInList();
+
+        // Verifica e gerencia o tempo restante dos ataques
+        ManageRaidTimers();
     }
 
     // Formata a mensagem de ataque
-    private static async Task<string> FormatAttackMessage(string logLine)
+    private static async Task<formattedMessageClass> FormatAttackMessage(string logLine)
     {
         // Carrega os dados das guildas do arquivo JSON
         var guildData = LoadGuildData(GuildExportFilePath);
         // Obtém a lista de jogadores online
         var onlinePlayers = await GetOnlinePlayers();
+        var onlineNamePlayers = new List<string>();
+
+        foreach (var onlinePlayer in onlinePlayers)
+        {
+            onlineNamePlayers.Add(onlinePlayer.Name);
+        }
 
         // Extrai as informações da linha do log
         string time = logLine.Substring(1, 8);
         string attacker = ExtractAttackerName(logLine);
+        string attackerId = "";
+        string attackerGuild = "";
+        string attackerGuildId = "";
+
+        foreach (var onlinePlayer in onlinePlayers)
+        {
+            if (onlinePlayer.Name.Contains(attacker))
+            {
+                attackerId = onlinePlayer.UserId;
+                break;
+            }
+        }
+
         string guildName = ExtractGuild(logLine);
+
+        if (guildName == "Guilda sem nome")
+        {
+            return null;
+        }
 
         // Itera sobre as guildas carregadas
         foreach (var guildEntry in guildData.Guilds)
@@ -194,17 +292,39 @@ class Program
                 var onlineMembers = new List<string>();
                 foreach (var member in guildEntry.Value.Members)
                 {
-                    if (onlinePlayers.Contains(member.Value.NickName))
+                    if (onlineNamePlayers.Contains(member.Value.NickName))
                     {
                         onlineMembers.Add(member.Value.NickName);
+
                     }
                 }
+                foreach (var atacante in guildData.Guilds)
+                {
+                    foreach (var member in atacante.Value.Members)
+                    {
+                        if (attacker == member.Value.NickName)
+                        {
+                            attackerGuild = atacante.Value.Name;
+                            attackerGuildId = atacante.Key;
+                            break;
+                        }
+                    }
+                }
+
 
                 // Cria uma lista formatada com os membros online
                 var onlineMembersList = onlineMembers.Any() ? string.Join(", ", onlineMembers) : "Nenhum membro online";
 
                 // Retorna a mensagem formatada
-                return $"{time} {attacker} atacou a guilda {guildEntry.Value.Name} ({onlineMembersList})";
+                formattedMessageClass messageReturn = new();
+                messageReturn.message = $"{time} {attacker} ({attackerGuild}) atacou a guilda {guildEntry.Value.Name} ({onlineMembersList})";
+                messageReturn.guildaAtacada = guildEntry.Value.Name;
+                messageReturn.menbrosOnline = onlineMembersList;
+                messageReturn.guildaAtacadaId = guildEntry.Key;
+                messageReturn.attackerId = attackerId;
+                messageReturn.attackerName = attacker;
+                messageReturn.guildaAtacanteId = attackerGuildId;
+                return messageReturn;
             }
         }
 
@@ -212,6 +332,61 @@ class Program
         return null;
     }
 
+    private static string ManageRaidTimers()
+    {
+        List<string> guildasToRemove = new List<string>();
+
+        foreach (var guilda in raidTimers.Keys)
+        {
+            TimeSpan quantoTempo = (raidTimers[guilda] - DateTime.Now);
+            if (raidTimers[guilda] <= DateTime.Now)
+            {
+                guildasToRemove.Add(guilda);
+            }
+        }
+
+        foreach (var guilda in guildasToRemove)
+        {
+            raidTimers.Remove(guilda);
+        }
+        return (string.Join(Environment.NewLine, raidTimers.Select(rt => $"Guilda: {rt.Key}, Timer: {rt.Value}")));
+    }
+
+    public static async Task KickPlayerNow(string userId, string message, string name)
+    {
+        var client = new HttpClient();
+        var request = new HttpRequestMessage(HttpMethod.Post, KickApiUrl);
+        request.Headers.Add("Authorization", ApiAuthorizationHeader);
+
+        var kickRequest = new
+        {
+            userid = userId,
+            message = message
+        };
+
+        var content = new StringContent(JsonConvert.SerializeObject(kickRequest), Encoding.UTF8, "application/json");
+        request.Content = content;
+
+        var response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        Console.WriteLine(name + " " + userId + " " + message);
+        //Console.WriteLine(await response.Content.ReadAsStringAsync());
+
+
+    }
+
+    public static void KickPlayersInList()
+    {
+        //Console.WriteLine(kickPlayersManager.KickedPlayers.Count);
+        foreach (var kickedPlayer in kickPlayersManager.KickedPlayers)
+        {
+            KickPlayerNow(kickedPlayer.UserId, kickedPlayer.Message, kickedPlayer.Name);
+
+            kickPlayersManager.RemoveKickedPlayer(kickedPlayer.UserId);
+
+            Thread.Sleep(1000);
+        }
+    }
 
     private static GuildContext LoadGuildData(string filePath)
     {
@@ -224,7 +399,7 @@ class Program
         public Dictionary<string, Guild> Guilds { get; set; }
     }
 
-    private static async Task<List<string>> GetOnlinePlayers()
+    private static async Task<List<PlayerInfo>> GetOnlinePlayers()
     {
         var client = new HttpClient();
         var request = new HttpRequestMessage(HttpMethod.Get, PlayersApiUrl);
@@ -234,7 +409,7 @@ class Program
         var responseBody = await response.Content.ReadAsStringAsync();
 
         var apiResponse = JsonConvert.DeserializeObject<ApiResponse>(responseBody);
-        return apiResponse.Players.Select(p => p.Name).ToList();
+        return apiResponse.Players.Select(p => new PlayerInfo { Name = p.Name, UserId = p.UserId }).ToList();
     }
 
     // Extrai o nome do atacante da linha de log
@@ -290,7 +465,7 @@ class Program
             Console.WriteLine($"Erro ao enviar notificação para o Discord: {ex.Message}");
         }
     }
-    static async Task ProcessLogMessage(string message, string webhookUrl)
+    static async Task<bool> ProcessLogMessage(string message, string webhookUrl)
     {
         string[] parts = message.Split(new[] { ' ' }, 2, StringSplitOptions.RemoveEmptyEntries);
 
@@ -301,13 +476,14 @@ class Program
                 if (DateTime.Now - lastTimestamp < CooldownPeriod)
                 {
                     // Mensagem repetida dentro do período de cooldown, ignorar
-                    Console.WriteLine($"Mensagem repetida, ignorando -- ({message})");
-                    return;
+                    //Console.WriteLine($"Mensagem repetida, ignorando -- ({message})");
+                    return false;
                 }
             }
 
             // Processar a mensagem (enviar para o Discord, etc.)
-            Console.WriteLine(message);
+            //Console.WriteLine(message);
+
             SendDiscordNotification(message, webhookUrl);
 
             // Atualizar o timestamp da mensagem
@@ -315,6 +491,7 @@ class Program
 
             // Remover entradas antigas do cache
             RemoveOldEntries();
+            return true;
         }
     }
     private static void RemoveOldEntries()
@@ -364,4 +541,58 @@ public class ApiResponse
 public class Player
 {
     public string Name { get; set; }
+    public string UserId { get; set; }
+    // Outros campos podem ser adicionados aqui conforme necessário
 }
+public class PlayerInfo
+{
+    public string Name { get; set; }
+    public string UserId { get; set; }
+}
+public class KickPlayersManager
+{
+    public List<KickPlayersAttakerOff> KickedPlayers { get; private set; } = new List<KickPlayersAttakerOff>();
+
+    public void AddKickedPlayer(string name, string userId, string message)
+    {
+        if (!KickedPlayers.Any(p => p.UserId == userId))
+        {
+            KickedPlayers.Add(new KickPlayersAttakerOff { Name = name, UserId = userId, Message = message });
+        }
+    }
+
+    public void RemoveKickedPlayer(string userId)
+    {
+        var player = KickedPlayers.FirstOrDefault(p => p.UserId == userId);
+        if (player != null)
+        {
+            Console.WriteLine(player.Name + " Removido da Lista");
+            KickedPlayers.Remove(player);
+        }
+    }
+
+    public void ClearKickedPlayers()
+    {
+        KickedPlayers.Clear();
+    }
+}
+
+public class KickPlayersAttakerOff
+{
+    public string UserId { get; set; }
+    public string Name { get; set; }
+    public string Message { get; set; }
+}
+public class formattedMessageClass
+{
+    public string message { get; set; }
+    public string attackerId { get; set; }
+    public string attackerName { get; set; }
+    public string guildaAtacadaId { get; set; }
+    public string menbrosOnline { get; set; }
+    public string guildaAtacada { get; set; }
+    public string guildaAtacanteId { get; set; }
+
+
+}
+
