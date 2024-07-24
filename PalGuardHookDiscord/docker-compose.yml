@@ -1,0 +1,23 @@
+services:
+  palguardhookdiscord:
+    build: .
+    network_mode: host
+    environment:
+      - LOG_DIRECTORY=/mnt/palguard/logs # Diretório dos logs
+      - DATA_DIRECTORY=/app/Dados # Diretório para dados
+      - PAL_GUARD_DIRECTORY=/mnt/palguard/guildexport.json # Caminho do arquivo JSON de exportação de guildas
+      - PLAYERS_API_URL=http://192.168.100.73:8212/v1/api/players # URL da API de jogadores
+      - KICK_API_URL=http://192.168.100.73:8212/v1/api/kick # URL da API de kick
+      - USUARIO_SERVIDOR_PAL=admin # Usuário do servidor Pal
+      - SENHA_SERVIDOR_PAL=unreal # Senha do servidor Pal
+      - DISCORD_WEBHOOK_URL_Logs=https://discord.com/api/webhooks/1264730050935263273/dFORkiYBVRu0muxAp8V6Kvj9_nmTaCjn_I1SXH_FrXmhdm1ZiEKE1MMIL5Xd3DhiNOAe # URL do webhook do Discord para logs
+      - DISCORD_WEBHOOK_URL_Cheater=https://discord.com/api/webhooks/1264728493967671446/Bp-gXNAH__HISjDMeSkYyIane-iQ38HE9QhIkXhPqq8DrTXErfGQThhA6YZoy3EZgu3a # URL do webhook do Discord para cheaters
+      - DISCORD_WEBHOOK_URL_AtaquesGuild=https://discord.com/api/webhooks/1264728721835954196/ZZRHjttkYbN-WL1EkgWntgdZtLuuijeFFafSY0xXytbhukvgJpRmuGpz2qKPEY5QgmwS # URL do webhook do Discord para ataques de guildas
+      - RAID_DURATION=2 # Duração do raid em horas
+      - COOLDOWN_MSG_API=1 # Tempo de cooldown entre mensagens
+    volumes:
+      - /mnt/palguard:/mnt/palguard # Mapear o diretório SMB para o contêiner
+      - dados:/app/Dados # Volume para dados persistentes
+
+volumes:
+  dados:

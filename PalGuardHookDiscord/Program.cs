@@ -9,18 +9,22 @@ class Program
 
     private static readonly ConcurrentDictionary<string, long> filePositions = new ConcurrentDictionary<string, long>();
     private static string currentLogFile = null;
+
     static string discordWebhookUrl_Logs;
     static string discordWebhookUrl_Cheater;
     static string discordWebhookUrl_AtaquesGuild;
 
-    static string GuildExportFilePath = @"\\OPTSUKE01\steamcmd\steamapps\common\PalServer\Pal\Binaries\Win64\palguard\guildexport.json";
-    static string PlayersApiUrl = "http://192.168.100.73:8212/v1/api/players";
-    private static string KickApiUrl = "http://192.168.100.73:8212/v1/api/kick";
-    static string ApiAuthorizationHeader = "Basic YWRtaW46dW5yZWFs";
+    static string GuildExportFilePath;
+    static string PlayersApiUrl;
+    private static string KickApiUrl;
+    private static string usuarioServidorPal;
+    private static string senhaServidorPal;
+
     static string logDirectory;
     static string dataDirectory;
+
     private static int TempoEntreMsg;
-    private static readonly TimeSpan CooldownPeriod = TimeSpan.FromMinutes(TempoEntreMsg); // Tempo para ignorar mensagens repetidas
+    private static readonly TimeSpan CooldownPeriod;
     private static Dictionary<string, DateTime> _recentLogs = new Dictionary<string, DateTime>();
     private static readonly object Lock = new object();
     static int semLogsEnviados = 0;
@@ -28,15 +32,27 @@ class Program
     private static Dictionary<string, DateTime> raidTimers = new Dictionary<string, DateTime>();
     private static int raidDurationInHours;
 
-
     static async Task Main(string[] args)
     {
-        // Obtém o diretório de logs a partir de variáveis de ambiente ou usa um caminho padrão
+        // Diretórios
         logDirectory = Environment.GetEnvironmentVariable("LOG_DIRECTORY") ?? @"\\192.168.100.73\palguard\logs";
         dataDirectory = Environment.GetEnvironmentVariable("DATA_DIRECTORY") ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Dados");
+        GuildExportFilePath = Environment.GetEnvironmentVariable("PAL_GUARD_DIRECTORY") ?? @"\\OPTSUKE01\steamcmd\steamapps\common\PalServer\Pal\Binaries\Win64\palguard\guildexport.json";
+
+        // URLs das APIs
+        PlayersApiUrl = Environment.GetEnvironmentVariable("PLAYERS_API_URL") ?? "http://192.168.100.73:8212/v1/api/players";
+        KickApiUrl = Environment.GetEnvironmentVariable("KICK_API_URL") ?? "http://192.168.100.73:8212/v1/api/kick";
+
+        // Credenciais do servidor
+        usuarioServidorPal = Environment.GetEnvironmentVariable("USUARIO_SERVIDOR_PAL") ?? "admin";
+        senhaServidorPal = Environment.GetEnvironmentVariable("SENHA_SERVIDOR_PAL") ?? "unreal";
+
+        // URLs dos Webhooks do Discord
         discordWebhookUrl_Logs = Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL_Logs") ?? "https://discord.com/api/webhooks/1264730050935263273/dFORkiYBVRu0muxAp8V6Kvj9_nmTaCjn_I1SXH_FrXmhdm1ZiEKE1MMIL5Xd3DhiNOAe";
         discordWebhookUrl_Cheater = Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL_Cheater") ?? "https://discord.com/api/webhooks/1264728493967671446/Bp-gXNAH__HISjDMeSkYyIane-iQ38HE9QhIkXhPqq8DrTXErfGQThhA6YZoy3EZgu3a";
         discordWebhookUrl_AtaquesGuild = Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL_AtaquesGuild") ?? "https://discord.com/api/webhooks/1264728721835954196/ZZRHjttkYbN-WL1EkgWntgdZtLuuijeFFafSY0xXytbhukvgJpRmuGpz2qKPEY5QgmwS";
+
+        // Configurações de raid e cooldown
         raidDurationInHours = int.Parse(Environment.GetEnvironmentVariable("RAID_DURATION") ?? "2");
         TempoEntreMsg = int.Parse(Environment.GetEnvironmentVariable("COOLDOWN_MSG_API") ?? "2");
 
@@ -142,7 +158,7 @@ class Program
             catch (Exception ex)
             {
                 Console.WriteLine($"Erro ao monitorar o arquivo: {ex.Message}");
-                Thread.Sleep( 120000 );
+                Thread.Sleep(120000);
             }
         }
 
@@ -198,6 +214,7 @@ class Program
     private static async Task ProcessLogLine(string logLine)
     {
         string formattedMessage = null;
+        Console.WriteLine(logLine);
 
         if (logLine.Contains("have dealt"))
         {
@@ -324,6 +341,7 @@ class Program
                 messageReturn.attackerId = attackerId;
                 messageReturn.attackerName = attacker;
                 messageReturn.guildaAtacanteId = attackerGuildId;
+                Console.WriteLine(messageReturn.message);
                 return messageReturn;
             }
         }
@@ -356,7 +374,13 @@ class Program
     {
         var client = new HttpClient();
         var request = new HttpRequestMessage(HttpMethod.Post, KickApiUrl);
-        request.Headers.Add("Authorization", ApiAuthorizationHeader);
+
+        // Converter login e senha para Base64
+        var login = usuarioServidorPal;
+        var senha = senhaServidorPal;
+        var authToken = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{login}:{senha}"));
+
+        request.Headers.Add("Authorization", $"Basic {authToken}");
 
         var kickRequest = new
         {
@@ -370,9 +394,7 @@ class Program
         var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         Console.WriteLine(name + " " + userId + " " + message);
-        //Console.WriteLine(await response.Content.ReadAsStringAsync());
-
-
+        // Console.WriteLine(await response.Content.ReadAsStringAsync());
     }
 
     public static void KickPlayersInList()
@@ -380,10 +402,9 @@ class Program
         //Console.WriteLine(kickPlayersManager.KickedPlayers.Count);
         foreach (var kickedPlayer in kickPlayersManager.KickedPlayers)
         {
+            Console.WriteLine($"{kickedPlayer.UserId} {kickedPlayer.Message} {kickedPlayer.Name}");
             KickPlayerNow(kickedPlayer.UserId, kickedPlayer.Message, kickedPlayer.Name);
-
             kickPlayersManager.RemoveKickedPlayer(kickedPlayer.UserId);
-
             Thread.Sleep(1000);
         }
     }
@@ -403,7 +424,10 @@ class Program
     {
         var client = new HttpClient();
         var request = new HttpRequestMessage(HttpMethod.Get, PlayersApiUrl);
-        request.Headers.Add("Authorization", ApiAuthorizationHeader);
+        var login = "admin";
+        var senha = "unreal";
+        var authToken = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{login}:{senha}"));
+        request.Headers.Add("Authorization", $"Basic {authToken}");
         var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         var responseBody = await response.Content.ReadAsStringAsync();
